@@ -1,0 +1,502 @@
+/* Lampa.plugin — UA Home v3.2 (повна версія)
+   UAFlix / UA Serial ряди на головній
+   + «Скоро на екранах» з реальними картками та датами виходу
+   + самооновлення плагіна
+   + короткі назви в меню (не обрізаються на ТВ)
+*/
+(function () {
+    'use strict';
+
+    var PLUGIN_VERSION = '3.2.0';
+    var PLUGIN_URL     = 'https://piwas84.github.io/uas/ua-home-lampa(6).js';
+    var VERSION_KEY    = 'ua_home_plugin_version';
+    var CHECK_KEY      = 'ua_home_last_version_check';
+    var FLAG           = '__ua_home_plugin_v3';
+
+    if (window[FLAG]) return;
+    window[FLAG] = true;
+
+    function wait(cb) {
+        if (window.Lampa && Lampa.Api && Lampa.ContentRows) cb();
+        else setTimeout(function () { wait(cb); }, 120);
+    }
+
+    wait(function () {
+
+        // ---------- helpers ----------
+        function setting(name, def) {
+            var v = Lampa.Storage.get(name, def);
+            if (v === 'true')  return true;
+            if (v === 'false') return false;
+            return (v === undefined || v === null) ? def : v;
+        }
+
+        function today() {
+            return new Date().toISOString().slice(0, 10);
+        }
+
+        function datePlusDays(days) {
+            var d = new Date();
+            d.setDate(d.getDate() + days);
+            return d.toISOString().slice(0, 10);
+        }
+
+        function pluginOn() {
+            return setting('ua_home_enable', true) !== false;
+        }
+
+        // Формат дати для картки: 15.11.2026
+        function formatDate(iso) {
+            if (!iso || iso.length < 10) return '';
+            var p = iso.slice(0, 10).split('-');
+            if (p.length !== 3) return iso.slice(0, 10);
+            return p[2] + '.' + p[1] + '.' + p[0];
+        }
+
+        // ---------- рядки ----------
+        var ROWS = [
+            // Тренди
+            { key: 'uah_trend',  title: 'Зараз у тренді',            short: 'Тренди',            def: true,  type: 'all', special: 'trending' },
+
+            // UAFlix
+            { key: 'uah_new',    title: 'UAFlix · Новинки',          short: 'Новинки',           def: true,  type: 'movie', sort: 'primary_release_date.desc', dynamicDates: true,
+              filter: { 'vote_count.gte': '20', include_adult: 'false' } },
+            { key: 'uah_pop_m',  title: 'UAFlix · Популярні фільми',  short: 'Популярні фільми',  def: true,  type: 'movie', sort: 'popularity.desc',
+              filter: { include_adult: 'false', 'vote_count.gte': '50' } },
+            { key: 'uah_top_m',  title: 'UAFlix · Топ фільмів',       short: 'Топ фільмів',       def: true,  type: 'movie', sort: 'vote_average.desc',
+              filter: { include_adult: 'false', 'vote_count.gte': '200' } },
+            { key: 'uah_uk_m',   title: 'UAFlix · Українською',       short: 'Українською',       def: true,  type: 'movie', sort: 'popularity.desc',
+              filter: { with_original_language: 'uk', include_adult: 'false', 'vote_count.gte': '5' } },
+            { key: 'uah_anim',   title: 'UAFlix · Мультфільми',       short: 'Мультфільми',       def: true,  type: 'movie', genre: 16 },
+            { key: 'uah_action', title: 'UAFlix · Бойовики',          short: 'Бойовики',          def: true,  type: 'movie', genre: 28 },
+            { key: 'uah_comedy', title: 'UAFlix · Комедії',           short: 'Комедії',           def: true,  type: 'movie', genre: 35 },
+            { key: 'uah_docs',   title: 'UAFlix · Документальні',     short: 'Документальні',     def: false, type: 'movie', genre: 99 },
+
+            // Приховані перлини
+            { key: 'uah_hidden', title: 'Приховані перлини',          short: 'Перлини',           def: true,  type: 'movie', sort: 'vote_average.desc',
+              filter: {
+                  include_adult: 'false',
+                  'vote_count.gte': '40',
+                  'vote_count.lte': '400',
+                  'vote_average.gte': '7.3'
+              } },
+
+            // Класика
+            { key: 'uah_classic', title: 'Класика',                   short: 'Класика',           def: false, type: 'movie', sort: 'vote_average.desc',
+              filter: {
+                  include_adult: 'false',
+                  'vote_count.gte': '800',
+                  'primary_release_date.lte': '2005-01-01'
+              } },
+
+            // Скоро на екранах (динамічні дати, реальні картки)
+            { key: 'uah_soon', title: 'Скоро на екранах', short: 'Скоро', def: true, type: 'movie', special: 'upcoming' },
+
+            // UA Serial
+            { key: 'uah_ser_new', title: 'UA Serial · Нові серії',    short: 'Нові серії',        def: true,  type: 'tv', sort: 'first_air_date.desc', dynamicDates: true,
+              filter: { 'vote_count.gte': '10', include_adult: 'false' } },
+            { key: 'uah_ser_pop', title: 'UA Serial · Популярні',      short: 'Популярні серіали', def: true,  type: 'tv', sort: 'popularity.desc',
+              filter: { include_adult: 'false', 'vote_count.gte': '30' } },
+            { key: 'uah_ser_top', title: 'UA Serial · Топ серіалів',   short: 'Топ серіалів',      def: true,  type: 'tv', sort: 'vote_average.desc',
+              filter: { include_adult: 'false', 'vote_count.gte': '100' } },
+            { key: 'uah_uk_s',   title: 'UA Serial · Українською',    short: 'Серіали UA',        def: true,  type: 'tv', sort: 'popularity.desc',
+              filter: { with_original_language: 'uk', include_adult: 'false', 'vote_count.gte': '3' } },
+            { key: 'uah_dorama', title: 'UA Serial · Дорами',         short: 'Дорами',            def: true,  type: 'tv', sort: 'popularity.desc',
+              filter: { with_original_language: 'ko|ja|zh|th', include_adult: 'false', 'vote_count.gte': '20' } },
+            { key: 'uah_anime',  title: 'UA Serial · Аніме',          short: 'Аніме',             def: true,  type: 'tv', genre: 16,
+              filter: { with_original_language: 'ja', include_adult: 'false' } },
+            { key: 'uah_cart',   title: 'UA Serial · Мультсеріали',   short: 'Мультсеріали',      def: true,  type: 'tv', genre: 16 }
+        ];
+
+        // ---------- кеш ----------
+        var memCache  = {};
+        var lastDay   = today();
+        var CACHE_TTL = 4 * 3600 * 1000; // 4 години
+
+        function clearMemCache() {
+            memCache = {};
+            lastDay  = today();
+            Lampa.Storage.set('ua_home_last_clear', String(Date.now()));
+        }
+
+        function ensureFreshDay() {
+            if (today() !== lastDay) clearMemCache();
+        }
+
+        // ---------- URL ----------
+        function buildUrl(r) {
+            ensureFreshDay();
+
+            if (r.special === 'trending') {
+                return 'trending/all/day?language=uk&_d=' + today();
+            }
+
+            // Скоро на екранах: сьогодні → +120 днів, сортування за датою виходу
+            if (r.special === 'upcoming') {
+                var from = today();
+                var to   = datePlusDays(120);
+                return 'discover/movie?' +
+                       'sort_by=primary_release_date.asc' +
+                       '&primary_release_date.gte=' + from +
+                       '&primary_release_date.lte=' + to +
+                       '&include_adult=false' +
+                       '&vote_count.gte=1' +
+                       '&with_release_type=2|3' +
+                       '&language=uk' +
+                       '&_d=' + today();
+            }
+
+            var media = r.type === 'tv' ? 'tv' : 'movie';
+            var q = 'discover/' + media + '?sort_by=' + (r.sort || 'popularity.desc');
+
+            if (r.filter) {
+                for (var k in r.filter) {
+                    q += '&' + k + '=' + encodeURIComponent(r.filter[k]);
+                }
+            } else if (r.genre) {
+                q += '&with_genres=' + r.genre + '&include_adult=false&vote_count.gte=40';
+            }
+
+            if (r.dynamicDates || r.genre) {
+                if (media === 'movie') q += '&primary_release_date.lte=' + today();
+                else                   q += '&first_air_date.lte=' + today();
+            }
+
+            q += '&language=uk&_d=' + today();
+            return q;
+        }
+
+        // ---------- нормалізація ----------
+        function normalize(results, isUpcoming) {
+            var list = results || [];
+            var seen = {};
+            var out  = [];
+
+            for (var i = 0; i < list.length; i++) {
+                var c = list[i];
+                if (!c) continue;
+                if (!c.poster_path && !c.backdrop_path && !c.img) continue;
+
+                var rd = c.release_date || c.first_air_date || '';
+
+                // Тільки майбутні для «Скоро»
+                if (isUpcoming) {
+                    if (!rd || rd < today()) continue;
+                }
+
+                var key = (c.id || '') + '_' + (c.media_type || c.name || c.title || '');
+                if (seen[key]) continue;
+                seen[key] = true;
+
+                c.promo       = c.overview || '';
+                c.promo_title = c.name || c.title || '';
+
+                // Дата виходу на картці «Скоро»
+                if (isUpcoming && rd) {
+                    var nice = formatDate(rd);
+                    c.promo_title = (c.title || c.name) + ' · ' + nice;
+                    // рік теж оновлюємо, щоб Lampa показав правильний
+                    if (c.release_date) c.release_date = rd;
+                }
+
+                if (!c.media_type) {
+                    c.media_type = (c.first_air_date || c.name) ? 'tv' : 'movie';
+                }
+                c.source = 'tmdb';
+                out.push(c);
+            }
+            return out;
+        }
+
+        function loadRow(title, url, ready, isUpcoming) {
+            ensureFreshDay();
+            var now   = Date.now();
+            var entry = memCache[url];
+            if (entry && (now - entry.ts) < CACHE_TTL) {
+                ready(entry.data);
+                return;
+            }
+
+            Lampa.Api.list(
+                { source: 'tmdb', url: url },
+                function (json) {
+                    json = json || {};
+                    json.results = normalize(json.results, isUpcoming).slice(0, 24);
+                    json.title   = title;
+                    json.name    = title;
+                    memCache[url] = { ts: Date.now(), data: json };
+                    ready(json);
+                },
+                function () {
+                    ready({ title: title, name: title, results: [] });
+                }
+            );
+        }
+
+        // ---------- рядки на головній ----------
+        ROWS.forEach(function (r, i) {
+            Lampa.ContentRows.add({
+                name:   r.key,
+                title:  r.title,
+                screen: ['main'],
+                index:  30 + i,
+                call: function () {
+                    if (!pluginOn()) return [];
+                    if (setting('ua_home_on_main', true) === false) return [];
+                    if (setting(r.key, r.def) === false) return [];
+                    return function (ready) {
+                        loadRow(r.title, buildUrl(r), ready, r.special === 'upcoming');
+                    };
+                }
+            });
+        });
+
+        // ---------- налаштування ----------
+        if (Lampa.SettingsApi) {
+            try {
+                Lampa.SettingsApi.addComponent({
+                    component: 'ua_home',
+                    name: 'UA Home',
+                    icon: '<svg viewBox="0 0 100 100"><rect x="12" y="12" width="76" height="76" rx="22" fill="none" stroke="currentColor" stroke-width="6"/><text x="50" y="62" text-anchor="middle" font-size="28" font-weight="700" fill="currentColor">UA</text></svg>'
+                });
+
+                Lampa.SettingsApi.addParam({
+                    component: 'ua_home',
+                    param: { name: 'ua_home_enable', type: 'trigger', default: true },
+                    field: { name: 'Увімкнути плагін', description: 'Ряди UAFlix / UA Serial на головній' }
+                });
+
+                Lampa.SettingsApi.addParam({
+                    component: 'ua_home',
+                    param: { name: 'ua_home_on_main', type: 'trigger', default: true },
+                    field: { name: 'Ряди на головній', description: 'Показувати рядки на головній сторінці' }
+                });
+
+                Lampa.SettingsApi.addParam({
+                    component: 'ua_home',
+                    param: { name: 'ua_home_auto_update', type: 'trigger', default: true },
+                    field: { name: 'Автооновлення плагіна', description: 'Перевіряти нову версію раз на добу і пропонувати оновлення' }
+                });
+
+                ROWS.forEach(function (r) {
+                    Lampa.SettingsApi.addParam({
+                        component: 'ua_home',
+                        param: { name: r.key, type: 'trigger', default: r.def },
+                        field: { name: r.title, description: 'Показувати цей ряд' }
+                    });
+                });
+            } catch (e) {
+                console.log('[UA Home] settings error', e);
+            }
+        }
+
+        // ---------- меню ----------
+        var menuAdded = false;
+
+        function openMenu() {
+            if (!pluginOn()) return;
+
+            var items = ROWS.filter(function (r) {
+                return setting(r.key, r.def) !== false;
+            }).map(function (r) {
+                return {
+                    title: r.short || r.title,
+                    row:   r
+                };
+            });
+
+            if (!Lampa.Select || !Lampa.Select.show) return;
+
+            Lampa.Select.show({
+                title: 'UA Home',
+                items: items,
+                onSelect: function (a) {
+                    if (!a || !a.row) return;
+                    var r = a.row;
+
+                    if (r.special === 'trending') {
+                        Lampa.Activity.push({
+                            url: 'trending/all/day',
+                            title: r.title,
+                            component: 'category_full',
+                            source: 'tmdb',
+                            page: 1
+                        });
+                        return;
+                    }
+
+                    if (r.special === 'upcoming') {
+                        Lampa.Activity.push({
+                            url: 'discover/movie',
+                            title: r.title,
+                            component: 'category_full',
+                            source: 'tmdb',
+                            page: 1,
+                            sort_by: 'primary_release_date.asc',
+                            card_type: true,
+                            filter: {
+                                'primary_release_date.gte': today(),
+                                'primary_release_date.lte': datePlusDays(120),
+                                include_adult: 'false',
+                                'vote_count.gte': '1',
+                                with_release_type: '2|3'
+                            }
+                        });
+                        return;
+                    }
+
+                    var media  = r.type === 'tv' ? 'tv' : 'movie';
+                    var filter = {};
+                    if (r.filter) {
+                        for (var k in r.filter) filter[k] = r.filter[k];
+                    } else if (r.genre) {
+                        filter.with_genres       = String(r.genre);
+                        filter.include_adult     = 'false';
+                        filter['vote_count.gte'] = '40';
+                    }
+
+                    Lampa.Activity.push({
+                        url: 'discover/' + media,
+                        title: r.title,
+                        component: 'category_full',
+                        source: 'tmdb',
+                        page: 1,
+                        sort_by: r.sort || 'popularity.desc',
+                        card_type: true,
+                        filter: filter
+                    });
+                },
+                onBack: function () {
+                    Lampa.Controller.toggle('menu');
+                }
+            });
+        }
+
+        function addMenu() {
+            if (menuAdded || !pluginOn()) return;
+            try {
+                var icon = '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>';
+                if (Lampa.Menu && Lampa.Menu.addButton) {
+                    Lampa.Menu.addButton(icon, 'UA Home', openMenu);
+                    menuAdded = true;
+                }
+            } catch (e) {
+                console.log('[UA Home] menu error', e);
+            }
+        }
+
+        // ---------- самооновлення плагіна ----------
+        function applyUpdate(remoteVersion) {
+            try {
+                // Видаляємо старий прапорець, щоб новий скрипт міг завантажитись
+                window[FLAG] = false;
+                var s = document.createElement('script');
+                s.src = PLUGIN_URL + '?v=' + encodeURIComponent(remoteVersion) + '&t=' + Date.now();
+                s.onload = function () {
+                    Lampa.Noty.show('UA Home оновлено до v' + remoteVersion);
+                    Lampa.Storage.set(VERSION_KEY, remoteVersion);
+                };
+                s.onerror = function () {
+                    window[FLAG] = true;
+                    Lampa.Noty.show('Не вдалося оновити UA Home');
+                };
+                document.head.appendChild(s);
+            } catch (e) {
+                console.log('[UA Home] update error', e);
+            }
+        }
+
+        function checkForUpdate(force) {
+            if (!force && setting('ua_home_auto_update', true) === false) return;
+
+            var lastCheck = parseInt(Lampa.Storage.get(CHECK_KEY, '0'), 10) || 0;
+            if (!force && Date.now() - lastCheck < 24 * 3600 * 1000) return;
+
+            Lampa.Storage.set(CHECK_KEY, String(Date.now()));
+
+            fetch(PLUGIN_URL + '?t=' + Date.now(), { cache: 'no-store' })
+                .then(function (r) { return r.text(); })
+                .then(function (txt) {
+                    var m = txt.match(/PLUGIN_VERSION\s*=\s*['"]([\d.]+)['"]/);
+                    if (!m) return;
+
+                    var remote = m[1];
+                    var local  = Lampa.Storage.get(VERSION_KEY, PLUGIN_VERSION) || PLUGIN_VERSION;
+
+                    // просте порівняння версій x.y.z
+                    function verNum(v) {
+                        return (v || '0').split('.').map(function (n) {
+                            return parseInt(n, 10) || 0;
+                        });
+                    }
+                    function isNewer(a, b) {
+                        var aa = verNum(a), bb = verNum(b);
+                        for (var i = 0; i < 3; i++) {
+                            if ((aa[i] || 0) > (bb[i] || 0)) return true;
+                            if ((aa[i] || 0) < (bb[i] || 0)) return false;
+                        }
+                        return false;
+                    }
+
+                    if (isNewer(remote, local)) {
+                        if (Lampa.Noty) {
+                            Lampa.Noty.show('UA Home v' + remote + ' доступна. Оновлюю…');
+                        }
+                        setTimeout(function () {
+                            applyUpdate(remote);
+                        }, 1200);
+                    } else {
+                        Lampa.Storage.set(VERSION_KEY, local);
+                    }
+                })
+                .catch(function () {});
+        }
+
+        // ---------- слухачі ----------
+        if (Lampa.Listener) {
+            Lampa.Listener.follow('menu', function (e) {
+                if (e.type === 'start' || e.type === 'end') setTimeout(addMenu, 80);
+            });
+
+            Lampa.Listener.follow('app', function (e) {
+                if (e && e.type === 'ready') {
+                    ensureFreshDay();
+                    setTimeout(addMenu, 500);
+                    setTimeout(function () { checkForUpdate(false); }, 4000);
+                }
+            });
+
+            Lampa.Listener.follow('activity', function (e) {
+                if (!e || (e.type !== 'start' && e.type !== 'archive')) return;
+                try {
+                    var act = Lampa.Activity.active && Lampa.Activity.active();
+                    if (act && act.component === 'main') {
+                        ensureFreshDay();
+                        var lastClear = parseInt(Lampa.Storage.get('ua_home_last_clear', '0'), 10) || 0;
+                        if (Date.now() - lastClear > CACHE_TTL) clearMemCache();
+                    }
+                } catch (err) {}
+            });
+        }
+
+        // Періодичне оновлення дня + кешу
+        setInterval(function () {
+            ensureFreshDay();
+        }, 30 * 60 * 1000);
+
+        // Меню (кілька спроб — Lampa ініціалізується з різною швидкістю)
+        setTimeout(addMenu, 1200);
+        setTimeout(addMenu, 3000);
+        setTimeout(addMenu, 6000);
+
+        // Перша перевірка оновлення
+        setTimeout(function () { checkForUpdate(false); }, 6000);
+
+        // Зберігаємо поточну версію
+        if (!Lampa.Storage.get(VERSION_KEY)) {
+            Lampa.Storage.set(VERSION_KEY, PLUGIN_VERSION);
+        }
+
+        console.log('[UA Home] v' + PLUGIN_VERSION + ' — повна версія: Скоро на екранах + дати + автооновлення');
+    });
+})();
